@@ -188,18 +188,18 @@ class Model:
         problem = tarski.fstrips.create_fstrips_problem(
             domain_name=domain_name, problem_name=problem_name, language=lang
         )
-        sorts = set()
+        sorts = {"object"}
         if self.learned_sorts is not None:
-            for sort in self.learned_sorts:
-                if isinstance(sort, Sort) and sort.sort_name not in sorts:
-                    if sort.parent is None:
-                        lang.sort(name=sort.sort_name)
-                        sorts.add(sort.sort_name)
-            for sort in self.learned_sorts:
-                if isinstance(sort, Sort) and sort.sort_name not in sorts:
-                    if sort.parent is not None:
-                        lang.sort(name=sort.sort_name, parent=sort.parent)
-                        sorts.add(sort.sort_name)
+            for s in self.learned_sorts:
+                if isinstance(s, Sort) and s.sort_name not in sorts:
+                    if s.parent is None:
+                        lang.sort(name=s.sort_name)
+                        sorts.add(s.sort_name)
+            for s in self.learned_sorts:
+                if isinstance(s, Sort) and s.sort_name not in sorts:
+                    if s.parent is not None:
+                        lang.sort(name=s.sort_name, parent=s.parent)
+                        sorts.add(s.sort_name)
 
 
         if self.fluents:

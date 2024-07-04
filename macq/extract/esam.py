@@ -53,6 +53,7 @@ class ESAM:
                 sorts: list[Sort] = None,
                 action_2_sort: dict[str, list[str]] = None,
                 fluent_types: [str, list]=None,
+                untyped:bool=False,
                 **kwargs
                 ) -> Model:
         """ learns from fully observable observations under no further assumptions to extract a safe lifted action model
@@ -168,13 +169,14 @@ class ESAM:
             for k, v in cnf_ef_as_set.items():
                 cnf_ef[k] = And(v)
 
-            for a_name in L_bLA.keys():
-                print(f"{a_name} cnf is: {cnf_ef[a_name]}\n")
-                print(f"{a_name} vars_to forget are: {vars_to_forget[a_name]}\n")
-                cnf_ef[a_name] = cnf_ef[a_name].forget(vars_to_forget[a_name])
-                print(f"{a_name} cnf after forget is: {cnf_ef[a_name]}")
-                cnf_ef[a_name] = cnf_ef[a_name].implicates()
-                print(f"{a_name} cnf after minimization is: {cnf_ef[a_name]}\n==================")
+            if debug:
+                for a_name in L_bLA.keys():
+                    print(f"{a_name} cnf is: {cnf_ef[a_name]}\n")
+                    print(f"{a_name} vars_to forget are: {vars_to_forget[a_name]}\n")
+                    cnf_ef[a_name] = cnf_ef[a_name].forget(vars_to_forget[a_name])
+                    print(f"{a_name} cnf after forget is: {cnf_ef[a_name]}")
+                    cnf_ef[a_name] = cnf_ef[a_name].implicates()
+                    print(f"{a_name} cnf after minimization is: {cnf_ef[a_name]}\n==================")
 
             return con_pre, cnf_ef
 
@@ -195,6 +197,23 @@ class ESAM:
 
         else:
             cls.objects_names_2_types = {k: v.sort_name for k,v in obj_to_sort.items()}
+
+        if untyped:
+            for act, act_sorts in action_2_sort.items():
+                s = []
+                for _ in act_sorts:
+                    s.append("object")
+                action_2_sort[act] = s
+
+            if isinstance(obj_to_sort,dict):
+                for obj, _ in obj_to_sort.items():
+                    obj_to_sort[obj] = Sort("object", None)
+
+            sorts = None
+            if isinstance(cls.objects_names_2_types, dict):
+                cls.objects_names_2_types = {obj: "object" for obj in cls.objects_names_2_types.keys()}
+
+
 
         if debug:
             print(action_2_sort.__str__())
