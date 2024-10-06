@@ -11,7 +11,7 @@ from tarski.syntax.formulas import CompoundFormula, Connective, top
 from ..utils import ComplexEncoder
 from .learned_action import LearnedAction, LearnedLiftedAction, ParameterBoundLearnedLiftedAction
 from .learned_fluent import LearnedFluent, LearnedLiftedFluent, PHashLearnedLiftedFluent
-from .Sort import Sort
+from .learned_sort import Sort
 
 
 class Model:

@@ -3,7 +3,8 @@ from ..trace import Fluent, Action
 
 
 class Sort:
-    """clss representation of a sort matching the tarski lang representation"""
+    """clss representation of a sort matching the tarski lang representation
+    the sorts is expressed as a directed graph were each node has deg-in of 1 and deg-out>=0"""
     sort_name: str
     parent: [str | None]
 
@@ -22,6 +23,32 @@ class Sort:
     def details(self):
         return f"name: {self.sort_name}, parent: {self.parent}"
 
+    # def get_ordered_branch(self):
+    #     parent = self.parent
+    #     ret = list()
+    #     ret.append(self)
+    #     while parent:
+    #         ret.append(parent)
+    #     ret.append(Sort("object", None))
+    #     ret.reverse()
+    #     return ret
+
+
+# def build_sorts_tree(sorts_set: set[Sort]) -> list[Sort] :
+#     root = Sort("object", None)
+#     ordered_sorts_list: list[Sort] = list()
+#     added_sorts: set[Sort] = set()
+#     ordered_sorts_list.append(root)
+#     added_sorts.add(root)
+#     for sort in sorts_set:
+#         if sort.parent is None or sort not in added_sorts:
+#             branch = sort.get_ordered_branch()
+#             ordered_sorts_list += branch
+#             added_sorts.update(branch)
+#
+#     return ordered_sorts_list
+
+
 
 
 def sort_by_observations(obs_trace_list: ObservedTraceList) -> (set[Sort], dict[str, str]):
@@ -34,7 +61,18 @@ def sort_by_observations(obs_trace_list: ObservedTraceList) -> (set[Sort], dict[
 
 def sort_inference_by_fluents(obs_trace_list: ObservedTraceList,
                               true_fluents: set[Fluent]=None ) -> (dict[str, str]):
+    """
+        function for sorting objects based on the True fluents in the observations.
+        works great for traces generated out of untyped domain were the typing is defined by fluents
+        (i.e (truck t1) (vehicle t1) (locatable t1)).
+    Args:
+        obs_trace_list: the observed trace list
+        true_fluents: fluents in the trace that were True in some observed state
 
+    Returns:
+        dictionary of every object name mapped to his type based on the fluents parameter list
+
+    """
     os: set[str] = set()  # set of object names
     if not true_fluents:
         true_fluents = set()
@@ -80,6 +118,18 @@ def sort_inference_by_fluents(obs_trace_list: ObservedTraceList,
 
 
 def sort_inference_by_action(actions: set[Action]) -> (dict[str, str]):
+    """
+            function for sorting objects based on the True fluents in the observations.
+
+            with combination of the sort_inference_by_fluents function can be useful for learning typed domains
+            with sort tree of height 2.
+        Args:
+            actions: all the grounded actions that were observed
+
+        Returns:
+            dictionary of every object name mapped to his type based on the action parameter list
+
+        """
     os: set[str] = {obj.name for action in actions for obj in action.obj_params}
 
     objects: list[str] = list(os)  # list of object names

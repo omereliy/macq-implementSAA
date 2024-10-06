@@ -12,7 +12,7 @@
                (has-edge u2 u3)
                (has-edge u2 u1)
                (has-edge u3 u2)
-               (has-edge u1 u1)
+               (has-edge u2 u2)
                (has-edge u5 u4)
                (has-edge u4 u3)
                (has-edge u3 u5))))
