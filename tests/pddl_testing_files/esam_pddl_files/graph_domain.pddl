@@ -10,8 +10,8 @@
 
 (:action add-edge
   :parameters
-   (?v1
-    ?v2)
+   (?v1 - object
+    ?v2 - object)
   :precondition
    (and (vertex ?v1) (vertex ?v2)
 	(not(has-edge ?v1 ?v2)))
@@ -20,8 +20,8 @@
 
 (:action remove-edge
   :parameters
-   (?v1
-    ?v2)
+   (?v1 - object
+    ?v2 - object)
   :precondition
    (and (vertex ?v1) (vertex ?v2)
 	(has-edge ?v1 ?v2))

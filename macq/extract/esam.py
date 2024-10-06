@@ -5,12 +5,10 @@ from ..extract.learned_action import ParameterBoundLearnedLiftedAction
 from ..extract.learned_fluent import LearnedLiftedFluent, PHashLearnedLiftedFluent
 from itertools import product
 from nnf import And, Or, Var
-from ..extract.sam import sort_inference, DisjointSet
-from ..extract.Sort import Sort
-import sys
+from ..extract.learned_sort import Sort, sort_inference_by_fluents, DisjointSet
 
 
-def make_PHashFluent_set(action: Action, flu: Fluent, action_2_sort: dict[str, list[str]], fluent_types=None)\
+def make_param_bound_fluent_set(action: Action, flu: Fluent, action_2_sort: dict[str, list[str]], fluent_types=None)\
         -> set[PHashLearnedLiftedFluent]:
     """
     Args:
@@ -32,8 +30,9 @@ def make_PHashFluent_set(action: Action, flu: Fluent, action_2_sort: dict[str, l
     ----------
     """
     ret: set[PHashLearnedLiftedFluent] = set()
-    all_act_inds: list[list[int]] = list(map(list,
-                                             product(*find_indexes_in_l2(flu.objects, action.obj_params))))
+
+    occurrences_list = find_indexes_in_l2(flu.objects, action.obj_params)
+    all_act_inds: list[list[int]] = [list(t) for t in product(*occurrences_list)]
     sorts: list[str] = [action_2_sort[action.name][i] for i in all_act_inds[0]] if fluent_types is None else fluent_types[flu.name]
     if all(len(act_inds) > 0 for act_inds in all_act_inds):
         for act_inds in all_act_inds:  # for each product add the matching fluent information to the dict
@@ -48,11 +47,11 @@ class ESAM:
     def __new__(cls,
                 obs_trace_list: ObservedTraceList = None,
                 debug=False,
-                recursion_limit=2000,
                 obj_to_sort: dict[str, Sort] = None,
                 sorts: list[Sort] = None,
                 action_2_sort: dict[str, list[str]] = None,
                 fluent_types: [str, list]=None,
+                untyped:bool=False,
                 **kwargs
                 ) -> Model:
         """ learns from fully observable observations under no further assumptions to extract a safe lifted action model
@@ -69,7 +68,6 @@ class ESAM:
                                 :return:
                                    a model based on ESAM learning
                                 """
-        sys.setrecursionlimit(recursion_limit)
         if debug:
             actions = obs_trace_list.get_actions()
             for a in actions:
@@ -87,8 +85,8 @@ class ESAM:
             cnf_ef: dict[str, And[Or[Var]]] = dict()  # represents parameter bound literals mapped by action, of eff
             cnf_ef_as_set: dict[str, set[Or[Var]]] = dict()
             vars_to_forget: dict[str, set[int]] = dict()  # will be used when minimizing effects cnf
-            for n in {a.name for a in actions_in_traces}:  # init set for each name
-                con_pre[n] = {literals2index[lit] for lit in L_bLA[n]}
+            for n in {action.name for action in actions_in_traces}:  # init set for each name
+                con_pre[n] = {literals2index[lit] for lit in l_b_la[n]}
                 vars_to_forget[n] = set()
                 cnf_ef[n] = And()
                 cnf_ef_as_set[n] = set()
@@ -98,35 +96,35 @@ class ESAM:
                 for tr in transitions:
                     to_remove: set[int] = set()
                     pre_state: State = tr[0].state
-                    for i in con_pre[a.name]:
-                        lif_flu = literals[i-1]
-                        if all(ind <= len(a.obj_params) for ind in lif_flu.param_act_inds):
+                    for precond in con_pre[action.name]:
+                        lif_flu = literals[precond - 1]
+                        if all(ind <= len(action.obj_params) for ind in lif_flu.param_act_inds):
                             fluent = Fluent(lif_flu.name,
-                                            [a.obj_params[ob_index] for ob_index in lif_flu.param_act_inds])
+                                            [action.obj_params[ob_index] for ob_index in lif_flu.param_act_inds])
                             if ((fluent not in pre_state.fluents.keys())
                                     or not pre_state.fluents[fluent]):
                                 # unbound or if not true, means, preA contains at the end only true value fluents
                                 to_remove.add(literals2index[lif_flu])
-                    con_pre[a.name].difference_update(to_remove)
+                    con_pre[action.name].difference_update(to_remove)
 
             def make_cnf_eff():
                 """add all parameter-bound literals that may be an effect to cnf formula as is_eff(lit_num)"""
-                for tr in transitions:
-                    pre_state: State = tr[0].state
-                    post_state: State = tr[1].state
+                for transition in transitions:
+                    pre_state: State = transition[0].state
+                    post_state: State = transition[1].state
                     for grounded_flu, val in pre_state.fluents.items():
-                        if all(ob in a.obj_params for ob in grounded_flu.objects):
+                        if all(ob in action.obj_params for ob in grounded_flu.objects):
                             if grounded_flu not in post_state.keys() or post_state[grounded_flu] != val:
                                 c_eff: list[Var] = list()
                                 'we use the call below to get all know param act inds for fluents'
                                 fluents: set[PHashLearnedLiftedFluent] =\
-                                    make_PHashFluent_set(a, grounded_flu, action_2_sort=action_2_sort, fluent_types=fluent_types)
+                                    make_param_bound_fluent_set(action, grounded_flu, action_2_sort=action_2_sort, fluent_types=fluent_types)
                                 for flu in fluents:
                                     if val:
                                         c_eff.append(Var(-literals2index[flu]))
                                     else:
                                         c_eff.append(Var(literals2index[flu]))
-                                cnf_ef_as_set[a.name].add(Or(c_eff))
+                                cnf_ef_as_set[action.name].add(Or(c_eff))
 
 
 
@@ -134,31 +132,27 @@ class ESAM:
                 """delete literal from cnf_eff_del\add of function if it hadn't occurred in some post state of the
                 action """
                 for flu in literals:
-                    if max(flu.param_act_inds)+1 <= len(a.obj_params):
+                    if max(flu.param_act_inds)+1 <= len(action.obj_params):
                         """print(f"act ind for flu:{flu.name} {flu.param_act_inds}")
                         print(f"length of action params is: {len(a.obj_params)}")"""
-                        fluent = Fluent(f.name, [a.obj_params[ind] for ind in sorted(flu.param_act_inds)])
+                        fluent = Fluent(f.name, [action.obj_params[ind] for ind in sorted(flu.param_act_inds)])
                         if fluent in post_state.fluents.keys():
                             if not post_state.fluents[fluent]:
-                                not_eff = Var(literals2index[flu], False)
-                                # cnf_ef_as_set[a.name].add(Or([not_eff]))  TODO change this
-                                vars_to_forget[a.name].add(literals2index[flu])
+                                vars_to_forget[action.name].add(literals2index[flu])
                             else:
-                                not_eff = Var(-literals2index[flu], False)
-                                # cnf_ef_as_set[a.name].add(Or([not_eff])) TODO change this
-                                vars_to_forget[a.name].add(-literals2index[flu])
+                                vars_to_forget[action.name].add(-literals2index[flu])
 
 
             if debug:
                 print("removing redundant preconditions based on transitions")
                 print(" adding effects based on transitions")
-            for a, transitions in obs_trace_list.get_all_transitions().items():  # sas is state-action-state
-                if isinstance(a, Action):
+            for action, transitions in obs_trace_list.get_all_transitions().items():  # sas is state-action-state
+                if isinstance(action, Action):
                     remove_redundant_preconditions()
                     make_cnf_eff()
             if debug:
                 print("adding not(is_eff(l)) clauses to cnf of is_eff")
-            for a, transitions in obs_trace_list.get_all_transitions().items():
+            for action, transitions in obs_trace_list.get_all_transitions().items():
                 for trans in transitions:
                     add_not_iseff(trans[1].state)  # trans[1].state is the post state
             # last step of function is to minimize all cnf of effects.
@@ -168,13 +162,14 @@ class ESAM:
             for k, v in cnf_ef_as_set.items():
                 cnf_ef[k] = And(v)
 
-            for a_name in L_bLA.keys():
-                print(f"{a_name} cnf is: {cnf_ef[a_name]}\n")
-                print(f"{a_name} vars_to forget are: {vars_to_forget[a_name]}\n")
-                cnf_ef[a_name] = cnf_ef[a_name].forget(vars_to_forget[a_name])
-                print(f"{a_name} cnf after forget is: {cnf_ef[a_name]}")
-                cnf_ef[a_name] = cnf_ef[a_name].implicates()
-                print(f"{a_name} cnf after minimization is: {cnf_ef[a_name]}\n==================")
+            if debug:
+                for a_name in l_b_la.keys():
+                    print(f"{a_name} cnf is: {cnf_ef[a_name]}\n")
+                    print(f"{a_name} vars_to forget are: {vars_to_forget[a_name]}\n")
+                    cnf_ef[a_name] = cnf_ef[a_name].forget(vars_to_forget[a_name])
+                    print(f"{a_name} cnf after forget is: {cnf_ef[a_name]}")
+                    cnf_ef[a_name] = cnf_ef[a_name].implicates()
+                    print(f"{a_name} cnf after minimization is: {cnf_ef[a_name]}\n==================")
 
             return con_pre, cnf_ef
 
@@ -186,8 +181,7 @@ class ESAM:
             sort_dict: dict[str, str]
             if obs_trace_list is not None:
                 obs_trace_list = obs_trace_list
-                # sort_dict = sort_inference(obs_trace_list)
-                sort_dict =sort_inference(obs_trace_list)
+                sort_dict =sort_inference_by_fluents(obs_trace_list)
                 cls.objects_names_2_types = sort_dict
                 for act in obs_trace_list.get_actions():
                     if act.name not in action_2_sort.keys():
@@ -196,33 +190,48 @@ class ESAM:
         else:
             cls.objects_names_2_types = {k: v.sort_name for k,v in obj_to_sort.items()}
 
+        if untyped:
+            for act, act_sorts in action_2_sort.items():
+                s = []
+                for _ in act_sorts:
+                    s.append("object")
+                action_2_sort[act] = s
+
+            if isinstance(obj_to_sort,dict):
+                for obj, _ in obj_to_sort.items():
+                    obj_to_sort[obj] = Sort("object", None)
+
+            sorts = None
+            if isinstance(cls.objects_names_2_types, dict):
+                cls.objects_names_2_types = {obj: "object" for obj in cls.objects_names_2_types.keys()}
+
+
+
         if debug:
             print(action_2_sort.__str__())
 
         literals2index: dict[PHashLearnedLiftedFluent, int] = dict()
-        literals: list[PHashLearnedLiftedFluent] = list()
         actions_in_traces: set[Action] = obs_trace_list.get_actions() if obs_trace_list is not None else None
         # the sets below are the arguments the model constructor requires and are the endpoint of this algorithm
         learned_actions: set[ParameterBoundLearnedLiftedAction] = set()
         learned_fluents: set[LearnedLiftedFluent] = set()
 
         # step 1, collect all literals binding of each action
-        L_bLA: dict[str, set[PHashLearnedLiftedFluent]] = {act.name: set() for act in actions_in_traces}
+        l_b_la: dict[str, set[PHashLearnedLiftedFluent]] = {act.name: set() for act in actions_in_traces}
         if debug:
             print("initiating process of collecting all L_bla possible for actions")
         for f in obs_trace_list.get_fluents():  # for every fluent in the acts fluents
             for act in actions_in_traces:
                 if all(ob in act.obj_params for ob in f.objects):
-                    L_bLA[act.name].update(make_PHashFluent_set(action=act,
-                                                                flu=f,
-                                                                action_2_sort=action_2_sort,
-                                                                fluent_types=fluent_types))
+                    l_b_la[act.name].update(make_param_bound_fluent_set(action=act,
+                                                                       flu=f,
+                                                                       action_2_sort=action_2_sort,
+                                                                       fluent_types=fluent_types))
 
         # step 2, construct useful data structures to access meaningful information
-        literals: list[PHashLearnedLiftedFluent] = list(set().union(*L_bLA.values()))
-        all_flus: set[Fluent] = obs_trace_list.get_fluents()
+        literals: list[PHashLearnedLiftedFluent] = list(set().union(*l_b_la.values()))
 
-
+        # make pointer for each literal
         for index, l in enumerate(literals):
             literals2index[l] = index+1
 
@@ -232,17 +241,17 @@ class ESAM:
         conj_pre, cnf_eff = extract_clauses()
 
         # step 4, make all lifted actions based on lifted pre\add\delete fluents of action
-        surely_preA: dict[str, set[PHashLearnedLiftedFluent]] = dict()  # all fluents who are surely preconds
+        surely_pre_a: dict[str, set[PHashLearnedLiftedFluent]] = dict()  # all fluents who are surely preconds
         proxy_act_ind: int = 1  # counts action number, each action has different number, each proxy has extra info
         if debug:
             print("starting creation of proxy actions")
 
-        for action_name in L_bLA.keys():
+        for action_name in l_b_la.keys():
             if debug:
                 print(f"creating proxy actions for action: {action_name}")
                 print(f"\ncnf-eff for act {action_name} = {cnf_eff[action_name]}")
 
-            surely_preA[action_name] = {literals[abs(ind) - 1] for ind in conj_pre[action_name]}
+            surely_pre_a[action_name] = {literals[abs(ind) - 1] for ind in conj_pre[action_name]}
             # create proxy actions
             proxy_index = 0
             for model in cnf_eff[action_name].models():
@@ -267,7 +276,7 @@ class ESAM:
                                                           isinstance(ind, int) and model[ind] and ind > 0}
                 del_eff: set[PHashLearnedLiftedFluent] = {literals[abs(ind) - 1] for ind in model.keys() if
                                                           isinstance(ind, int) and model[ind] and ind < 0}
-                pre: set[PHashLearnedLiftedFluent] = surely_preA[action_name].union(
+                pre: set[PHashLearnedLiftedFluent] = surely_pre_a[action_name].union(
                     {literals[abs(ind) - 1] for ind in model.keys() if
                      isinstance(ind, int) and not model[ind] and ind > 0})
 
@@ -292,7 +301,9 @@ class ESAM:
             proxy_act_ind += 1  # increase counter of base action by 1
 
         # construct the model using the actions and fluents set we concluded from traces
-        learned_fluents.update(set(map(PHashLearnedLiftedFluent.to_LearnedLiftedFluent, literals)))
+        fluents_to_add: set[LearnedLiftedFluent] = {PHashLearnedLiftedFluent.
+                                                    to_LearnedLiftedFluent(literal) for literal in literals}
+        learned_fluents.update(fluents_to_add)
         return Model(learned_fluents, learned_actions, sorts if sorts else None)
 
     @staticmethod
@@ -301,7 +312,6 @@ class ESAM:
         """
         the method computes the minimization of parameter list
         Args:
-            pre: set of positive preconditions
             act_num_of_param: the length of action's param's list
             model_dict: represents the cnf, maps each literal to its grounded value
         Returns:
@@ -362,6 +372,14 @@ def find_indexes_in_l2(
         l1: list[PlanningObject],
         l2: list[PlanningObject])\
         -> (list[list[int]]):
+    """
+            Args:
+                l1: fluent object list
+                l2: action object list
+            Returns:
+                a list mapping each parameter index of a fluent,
+                 to a list containing all of he's occurrences in the action's parameter list
+            """
     index_dict = {}
 
     # Build a dictionary with elements of l2 and their indexes
