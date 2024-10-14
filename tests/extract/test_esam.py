@@ -181,7 +181,10 @@ class TestESAM(TestCase):
                                   observe_static_fluents=True)
 
         plan = vanilla.generate_plan()
+        print("the plan is:!!!")
         print(plan)
+        print("end of plan=========!!!")
+
         trace_list: TraceList = TraceList()
         trace_list.append(vanilla.generate_single_trace_from_plan(plan=plan))
         esam_model: Model = ESAM(obs_trace_list=trace_list.tokenize(

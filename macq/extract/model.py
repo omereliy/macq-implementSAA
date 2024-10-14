@@ -42,6 +42,7 @@ class Model:
                 The set of fluents in the model.
             actions (Set[LearnedAction]):
                 The set of actions in the model.
+            learned_sorts (Union[list[Sort], None]): the sorts of the objects
         """
         self.fluents = fluents
         self.actions = actions
