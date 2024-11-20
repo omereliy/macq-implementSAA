@@ -162,13 +162,15 @@ class ESAM:
             for k, v in cnf_ef_as_set.items():
                 cnf_ef[k] = And(v)
 
-            if debug:
-                for a_name in l_b_la.keys():
+            for a_name in l_b_la.keys():
+                if debug:
                     print(f"{a_name} cnf is: {cnf_ef[a_name]}\n")
                     print(f"{a_name} vars_to forget are: {vars_to_forget[a_name]}\n")
-                    cnf_ef[a_name] = cnf_ef[a_name].forget(vars_to_forget[a_name])
+                cnf_ef[a_name] = cnf_ef[a_name].forget(vars_to_forget[a_name])
+                if debug:
                     print(f"{a_name} cnf after forget is: {cnf_ef[a_name]}")
-                    cnf_ef[a_name] = cnf_ef[a_name].implicates()
+                cnf_ef[a_name] = cnf_ef[a_name].implicates()
+                if debug:
                     print(f"{a_name} cnf after minimization is: {cnf_ef[a_name]}\n==================")
 
             return con_pre, cnf_ef
@@ -242,7 +244,6 @@ class ESAM:
 
         # step 4, make all lifted actions based on lifted pre\add\delete fluents of action
         surely_pre_a: dict[str, set[PHashLearnedLiftedFluent]] = dict()  # all fluents who are surely preconds
-        proxy_act_ind: int = 1  # counts action number, each action has different number, each proxy has extra info
         if debug:
             print("starting creation of proxy actions")
 
@@ -271,7 +272,7 @@ class ESAM:
                 if is_to_skip:
                     continue
 
-                proxy_act_name = str(f"{action_name}_{proxy_act_ind}_{proxy_index}")
+                proxy_act_name = str(f"{action_name}_{proxy_index}")
                 add_eff: set[PHashLearnedLiftedFluent] = {literals[ind - 1] for ind in model.keys() if
                                                           isinstance(ind, int) and model[ind] and ind > 0}
                 del_eff: set[PHashLearnedLiftedFluent] = {literals[abs(ind) - 1] for ind in model.keys() if
@@ -298,7 +299,6 @@ class ESAM:
             if debug:
                 print(f"created {proxy_index} proxy actions for action: {action_name}")
                 print("======================================================================")
-            proxy_act_ind += 1  # increase counter of base action by 1
 
         # construct the model using the actions and fluents set we concluded from traces
         fluents_to_add: set[LearnedLiftedFluent] = {PHashLearnedLiftedFluent.
