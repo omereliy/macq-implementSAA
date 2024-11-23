@@ -189,9 +189,10 @@ class ESAM:
                     if act.name not in action_2_sort.keys():
                         action_2_sort[act.name] = [sort_dict[ob.name] for ob in act.obj_params]
 
-        else:
+        else: # match object names to theirs type
             cls.objects_names_2_types = {k: v.sort_name for k,v in obj_to_sort.items()}
 
+        # if untyped then all sorts are "object"
         if untyped:
             for act, act_sorts in action_2_sort.items():
                 s = []
