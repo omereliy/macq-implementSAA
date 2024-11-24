@@ -2,6 +2,7 @@ from .learned_sort import Sort, sort_inference_by_fluents
 from ..trace import Action, Fluent, State
 from ..extract import LearnedLiftedAction
 from ..extract.model import Model
+from ..extract.esam import make_param_bound_fluent_set
 from ..extract.learned_fluent import LearnedLiftedFluent, PHashLearnedLiftedFluent
 from ..observation import Observation, ObservedTraceList
 
@@ -88,7 +89,7 @@ class SAMgenerator:
             for obj, obj_type in obj_name_2_type.items():
                 self.sort_dict[obj] = Sort(obj_type, None)
 
-        self.update_l_b_la()
+        self.update_l_b_la2()
 
     # =======================================UPDATE FUNCTIONS========================================================
     def update_l_b_la(self):
@@ -120,6 +121,17 @@ class SAMgenerator:
                                                         sorts,
                                                         param_indexes_in_literal))
         self.preA = self.L_bLA.copy()
+    def update_l_b_la2(self):
+        actions_in_traces: set[Action] = self.obs_trace_list.get_actions()
+        self.L_bLA: dict[str, set[PHashLearnedLiftedFluent]] = {act.name: set() for act in actions_in_traces}
+        for f in self.obs_trace_list.get_fluents():  # for every fluent in the acts fluents
+            for act in actions_in_traces:
+                if all(ob in act.obj_params for ob in f.objects):
+                    self.L_bLA[act.name].update(make_param_bound_fluent_set(action=act,
+                                                                               flu=f,
+                                                                               action_2_sort=self.action_2_sort,
+                                                                               fluent_types=self.fluent_types))
+        self.preA = self.L_bLA.copy()
 
     # =======================================ALGORITHM LOGIC========================================================
     def remove_redundant_preconditions(self, act: Action, transitions: list[list[Observation]]):
@@ -145,10 +157,11 @@ class SAMgenerator:
         for trans in transitions:
             pre_state: State = trans[0].state
             post_state: State = trans[1].state
+            self.add_literal_binding_to_eff2(post_state, pre_state, act)
             # add all add_effects of parameter bound literals
-            self.add_literal_binding_to_eff(post_state, pre_state, act, add_delete="add")
-            # add all delete_effects of parameter bound literals
-            self.add_literal_binding_to_eff(pre_state, post_state, act, add_delete="delete")
+            # self.add_literal_binding_to_eff(post_state, pre_state, act, add_delete="add")
+            # # add all delete_effects of parameter bound literals
+            # self.add_literal_binding_to_eff(pre_state, post_state, act, add_delete="delete")
 
     def add_literal_binding_to_eff(self, s1: State, s2: State, act: Action,
                                    add_delete="add"):
@@ -166,32 +179,53 @@ class SAMgenerator:
                         if ="delete" it adds literal binding to the delete_effect
            """
         for k, v in s1.fluents.items():
-            if (not (k in s2.keys() and s2.fluents[k] == v)) and v:
-                param_indexes_in_literal: list[int] = list()
-                fluent_name = k.name
-                sorts: list[str] = list()
-                if fluent_name in self.fluent_types:
-                    sorts = self.fluent_types[fluent_name]
-                i: int = 0
-                for obj in k.objects:  # for every object in parameters, if object is in fluent, add its index
-                    if obj in act.obj_params:
-                        param_indexes_in_literal.append(act.obj_params.index(obj)) # todo fixxx
-                        if not self.fluent_types or fluent_name not in self.fluent_types:
-                            sorts.append(self.sort_dict[obj.name].sort_name)  # append obj sort
-                    i += 1
-                bla: PHashLearnedLiftedFluent = PHashLearnedLiftedFluent(fluent_name, sorts, param_indexes_in_literal)
-                if add_delete == "delete":
-                    if act.name in self.effA_delete.keys():  # if action name exists in dictionary
-                        # then add
-                        self.effA_delete[act.name].add(bla)  # add it to add effect
-                    else:
-                        self.effA_delete[act.name] = {bla}
+            if all(ob in act.obj_params for ob in k.objects):
+                if k not in s2.keys() or s2[k] != v:
+                    param_indexes_in_literal: list[int] = list()
+                    fluent_name = k.name
+                    sorts: list[str] = list()
+                    if fluent_name in self.fluent_types:
+                        sorts = self.fluent_types[fluent_name]
+                    i: int = 0
+                    for obj in k.objects:  # for every object in parameters, if object is in fluent, add its index
+                        if obj in act.obj_params:
+                            param_indexes_in_literal.append(act.obj_params.index(obj))
+                            if not self.fluent_types or fluent_name not in self.fluent_types:
+                                sorts.append(self.sort_dict[obj.name].sort_name)  # append obj sort
+                        i += 1
+                    bla: PHashLearnedLiftedFluent = PHashLearnedLiftedFluent(fluent_name, sorts, param_indexes_in_literal)
+                    if add_delete == "delete":
+                        if act.name in self.effA_delete.keys():  # if action name exists in dictionary
+                            # then add
+                            self.effA_delete[act.name].add(bla)  # add it to add effect
+                        else:
+                            self.effA_delete[act.name] = {bla}
 
-                if add_delete == "add":
-                    if act.name in self.effA_add.keys():  # if action name exists in dictionary then add
-                        self.effA_add[act.name].add(bla)  # add it to add effect
-                    else:
-                        self.effA_add[act.name] = {bla}
+                    if add_delete == "add":
+                        if act.name in self.effA_add.keys():  # if action name exists in dictionary then add
+                            self.effA_add[act.name].add(bla)  # add it to add effect
+                        else:
+                            self.effA_add[act.name] = {bla}
+    def add_literal_binding_to_eff2(self, s1: State, s2: State, act: Action):
+        for grounded_fluent, fluent_value in s1.fluents.items():
+            if all(ob in act.obj_params for ob in grounded_fluent.objects):
+                if grounded_fluent not in s2.keys() or s2[grounded_fluent] != fluent_value:
+                    lifted_fluents: set[PHashLearnedLiftedFluent] = \
+                            make_param_bound_fluent_set(action=act,
+                                                    flu=grounded_fluent,
+                                                    action_2_sort=self.action_2_sort,
+                                                    fluent_types=self.fluent_types)
+                    for lifted_fluent in lifted_fluents:
+                        if fluent_value:
+                            if act.name in self.effA_add:
+                                self.effA_add[act.name].add(lifted_fluent)
+                            else:
+                                self.effA_add[act.name] = {lifted_fluent}
+                        else:
+                            if act.name in self.effA_delete:
+                                self.effA_delete[act.name].add(lifted_fluent)
+                            else:
+                                self.effA_delete[act.name] = {lifted_fluent}
 
     def loop_over_action_triplets(self):
         """implement lines 5-11 in the SAM paper
