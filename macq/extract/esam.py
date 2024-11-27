@@ -98,9 +98,9 @@ class ESAM:
                     pre_state: State = tr[0].state
                     for precond in con_pre[action.name]:
                         lif_flu = literals[precond - 1]
-                        if all(ind <= len(action.obj_params) for ind in lif_flu.param_act_inds):
+                        if all(ind < len(action.obj_params) for ind in lif_flu.param_act_inds):
                             fluent = Fluent(lif_flu.name,
-                                            [action.obj_params[ob_index] for ob_index in lif_flu.param_act_inds])
+                                            [action.obj_params[ob_index] for ob_index in sorted(lif_flu.param_act_inds)])
                             if ((fluent not in pre_state.fluents.keys())
                                     or not pre_state.fluents[fluent]):
                                 # unbound or if not true, means, preA contains at the end only true value fluents
@@ -114,7 +114,7 @@ class ESAM:
                     post_state: State = transition[1].state
                     for grounded_flu, val in pre_state.fluents.items():
                         if all(ob in action.obj_params for ob in grounded_flu.objects):
-                            if grounded_flu not in post_state.keys() or post_state[grounded_flu] != val:
+                            if grounded_flu in post_state.keys() and post_state[grounded_flu] != val:
                                 c_eff: list[Var] = list()
                                 'we use the call below to get all know param act inds for fluents'
                                 fluents: set[PHashLearnedLiftedFluent] =\
@@ -126,21 +126,19 @@ class ESAM:
                                         c_eff.append(Var(literals2index[flu]))
                                 cnf_ef_as_set[action.name].add(Or(c_eff))
 
-
-
             def add_not_iseff(post_state: State):
                 """delete literal from cnf_eff_del\add of function if it hadn't occurred in some post state of the
                 action """
-                for flu in literals:
-                    if max(flu.param_act_inds)+1 <= len(action.obj_params):
+                for lifted_flu in literals:
+                    if max(lifted_flu.param_act_inds) < len(action.obj_params):
                         """print(f"act ind for flu:{flu.name} {flu.param_act_inds}")
                         print(f"length of action params is: {len(a.obj_params)}")"""
-                        fluent = Fluent(f.name, [action.obj_params[ind] for ind in sorted(flu.param_act_inds)])
-                        if fluent in post_state.fluents.keys():
-                            if not post_state.fluents[fluent]:
-                                vars_to_forget[action.name].add(literals2index[flu])
+                        grounded_fluent = Fluent(lifted_flu.name, [action.obj_params[ind] for ind in sorted(lifted_flu.param_act_inds)])
+                        if grounded_fluent in post_state.fluents.keys():
+                            if not post_state.fluents[grounded_fluent]:
+                                vars_to_forget[action.name].add(literals2index[lifted_flu])
                             else:
-                                vars_to_forget[action.name].add(-literals2index[flu])
+                                vars_to_forget[action.name].add(-literals2index[lifted_flu])
 
 
             if debug:
@@ -288,8 +286,6 @@ class ESAM:
                 param_sorts: list[str] = list()
                 for i in range(len(reversed_dict.keys())):
                     param_sorts.append(action_2_sort[action_name][reversed_dict[i]])
-
-
                 learned_actions.add(
                     ParameterBoundLearnedLiftedAction(proxy_act_name,
                                         param_sorts=param_sorts,
