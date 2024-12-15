@@ -43,7 +43,7 @@ def make_param_bound_fluent_set(action: Action, flu: Fluent, action_2_sort: dict
 class ESAM:
 
     objects_names_2_types: [str, str] = dict()
-
+    action_names_2_not_minimized_proxy: dict[str, list[ParameterBoundLearnedLiftedAction]] = dict()
     def __new__(cls,
                 obs_trace_list: ObservedTraceList = None,
                 debug=False,
@@ -54,19 +54,17 @@ class ESAM:
                 untyped:bool=False,
                 **kwargs
                 ) -> Model:
-        """ learns from fully observable observations under no further assumptions to extract a safe lifted action model
+        """ learns under the assumption of full observability to extract a safe lifted action model
         of the problem's domain.
             Args:
                 obs_trace_list(ObservedTraceList): tokenized TraceList.
-                recursion_limit(int): maximum recursion limit, option to change recursion limit, essential when trying
-                 to solve complex cnf equations
                 action_2_sort(dict str -> list[str]): optional, a map that maps the sorts of each action parameters
                 obj_to_sort(dict: str-> Sort): optional, a map that maps the sorts of each object parameters
                 sorts(list[Sort]): optional, sorts in the domain ordered s.t the parent is always before the child
                 for example- {"load-truck": ["obj", "obj", "loc"], "unload-truck": ["obj", "obj", "loc"],....}
                 debug(bool): defaults to False. if True, prints debug.
                                 :return:
-                                   a model based on ESAM learning
+                                   a learned action model with using E-SAM
                                 """
         if debug:
             actions = obs_trace_list.get_actions()
@@ -78,67 +76,85 @@ class ESAM:
             conjunction of number(positive for add effect, negative for delete effect) that represents fluents that
             may appear as an effect.
             """
+            nonlocal actions_in_traces
+            nonlocal literals2index
+            nonlocal l_b_la
+            nonlocal obs_trace_list
 
             if debug:
                 print("initializing conjunction of preconditions for each action")
-            con_pre: dict[str, set[int]] = dict()  # represents parameter bound literals mapped by action, of pre-cond
-            cnf_ef: dict[str, And[Or[Var]]] = dict()  # represents parameter bound literals mapped by action, of eff
-            cnf_ef_as_set: dict[str, set[Or[Var]]] = dict()
+            pre_conj: dict[str, set[int]] = dict()  # represents parameter bound literals mapped by action, of pre-cond
+            cnf_effects: dict[str, And[Or[Var]]] = dict()  # represents parameter bound literals mapped by action, of eff
+            cnf_eff_as_set: dict[str, set[Or[Var]]] = dict()
             vars_to_forget: dict[str, set[int]] = dict()  # will be used when minimizing effects cnf
             for n in {action.name for action in actions_in_traces}:  # init set for each name
-                con_pre[n] = {literals2index[lit] for lit in l_b_la[n]}
+                pre_conj[n] = {literals2index[lit] for lit in l_b_la[n]}
                 vars_to_forget[n] = set()
-                cnf_ef[n] = And()
-                cnf_ef_as_set[n] = set()
+                cnf_effects[n] = And()
+                cnf_eff_as_set[n] = set()
 
-            def remove_redundant_preconditions():
+            def remove_redundant_preconditions(pre_state: State):
                 """removes all parameter-bound literals that there groundings are not pre-state"""
-                for tr in transitions:
-                    to_remove: set[int] = set()
-                    pre_state: State = tr[0].state
-                    for precond in con_pre[action.name]:
-                        lif_flu = literals[precond - 1]
-                        if all(ind < len(action.obj_params) for ind in lif_flu.param_act_inds):
-                            fluent = Fluent(lif_flu.name,
-                                            [action.obj_params[ob_index] for ob_index in sorted(lif_flu.param_act_inds)])
-                            if ((fluent not in pre_state.fluents.keys())
-                                    or not pre_state.fluents[fluent]):
-                                # unbound or if not true, means, preA contains at the end only true value fluents
-                                to_remove.add(literals2index[lif_flu])
-                    con_pre[action.name].difference_update(to_remove)
+                nonlocal action
+                nonlocal pre_conj
+                nonlocal action_2_sort
+                nonlocal literals2index
+                nonlocal literals
+                to_remove: set[int] = set()
+                for precond in pre_conj[action.name]:
+                    lifted_fluent = literals[precond - 1]
+                    if all(ind < len(action.obj_params) for ind in lifted_fluent.param_act_inds):
+                        fluent = Fluent(lifted_fluent.name,
+                                        [action.obj_params[ob_index] for ob_index in lifted_fluent.param_act_inds])
+                        if ((fluent not in pre_state.fluents.keys())
+                                or not pre_state.fluents[fluent]):
+                            # unbound or if not true, means, preA contains at the end only true value fluents
+                            to_remove.add(literals2index[lifted_fluent])
+                pre_conj[action.name].difference_update(to_remove)
 
-            def make_cnf_eff():
+            def make_cnf_eff(pre_state: State, post_state: State):
                 """add all parameter-bound literals that may be an effect to cnf formula as is_eff(lit_num)"""
-                for transition in transitions:
-                    pre_state: State = transition[0].state
-                    post_state: State = transition[1].state
-                    for grounded_flu, val in pre_state.fluents.items():
-                        if all(ob in action.obj_params for ob in grounded_flu.objects):
-                            if grounded_flu in post_state.keys() and post_state[grounded_flu] != val:
-                                c_eff: list[Var] = list()
-                                'we use the call below to get all know param act inds for fluents'
-                                fluents: set[PHashLearnedLiftedFluent] =\
-                                    make_param_bound_fluent_set(action, grounded_flu, action_2_sort=action_2_sort, fluent_types=fluent_types)
-                                for flu in fluents:
-                                    if val:
-                                        c_eff.append(Var(-literals2index[flu]))
-                                    else:
-                                        c_eff.append(Var(literals2index[flu]))
-                                cnf_ef_as_set[action.name].add(Or(c_eff))
+                nonlocal action
+                nonlocal cnf_eff_as_set
+                nonlocal action_2_sort
+                nonlocal literals2index
+                nonlocal fluent_types
+                for grounded_fluent, val in pre_state.fluents.items():
+                    if all(ob in action.obj_params for ob in grounded_fluent.objects):
+                        if grounded_fluent in post_state.keys() and post_state[grounded_fluent] != val:
+                            c_eff: list[Var] = list()
+                            'we use the call below to get all know param act inds for fluents'
+                            fluents: set[PHashLearnedLiftedFluent] =\
+                                make_param_bound_fluent_set(action=action,
+                                                            flu=grounded_fluent,
+                                                            action_2_sort=action_2_sort,
+                                                            fluent_types=fluent_types)
+                            for flu in fluents:
+                                if val:
+                                    c_eff.append(Var(-literals2index[flu]))
+                                else:
+                                    c_eff.append(Var(literals2index[flu]))
+                            cnf_eff_as_set[action.name].add(Or(c_eff))
 
             def add_not_iseff(post_state: State):
                 """delete literal from cnf_eff_del\add of function if it hadn't occurred in some post state of the
                 action """
-                for lifted_flu in literals:
-                    if max(lifted_flu.param_act_inds) < len(action.obj_params):
+                nonlocal action
+                nonlocal literals2index
+                nonlocal vars_to_forget
+                nonlocal literals
+                for lifted_fluent in literals:
+                    if max(lifted_fluent.param_act_inds) < len(action.obj_params):
                         """print(f"act ind for flu:{flu.name} {flu.param_act_inds}")
                         print(f"length of action params is: {len(a.obj_params)}")"""
-                        grounded_fluent = Fluent(lifted_flu.name, [action.obj_params[ind] for ind in sorted(lifted_flu.param_act_inds)])
+                        grounded_fluent = Fluent(
+                            lifted_fluent.name,
+                            [action.obj_params[ind] for ind in lifted_fluent.param_act_inds])
                         if grounded_fluent in post_state.fluents.keys():
                             if not post_state.fluents[grounded_fluent]:
-                                vars_to_forget[action.name].add(literals2index[lifted_flu])
+                                vars_to_forget[action.name].add(literals2index[lifted_fluent])
                             else:
-                                vars_to_forget[action.name].add(-literals2index[lifted_flu])
+                                vars_to_forget[action.name].add(-literals2index[lifted_fluent])
 
 
             if debug:
@@ -146,32 +162,34 @@ class ESAM:
                 print(" adding effects based on transitions")
             for action, transitions in obs_trace_list.get_all_transitions().items():  # sas is state-action-state
                 if isinstance(action, Action):
-                    remove_redundant_preconditions()
-                    make_cnf_eff()
+                    for transition in transitions:
+                        remove_redundant_preconditions(pre_state=transition[0].state)
+                        make_cnf_eff(pre_state=transition[0].state,
+                                     post_state=transition[1].state)
             if debug:
                 print("adding not(is_eff(l)) clauses to cnf of is_eff")
             for action, transitions in obs_trace_list.get_all_transitions().items():
-                for trans in transitions:
-                    add_not_iseff(trans[1].state)  # trans[1].state is the post state
+                for transition in transitions:
+                    add_not_iseff(post_state=transition[1].state)  # trans[1].state is the post state
             # last step of function is to minimize all cnf of effects.
             if debug:
                 print("minimizing effects cnf of each action")
 
-            for k, v in cnf_ef_as_set.items():
-                cnf_ef[k] = And(v)
+            for k, v in cnf_eff_as_set.items():
+                cnf_effects[k] = And(v)
 
-            for a_name in l_b_la.keys():
+            for action in l_b_la.keys():
                 if debug:
-                    print(f"{a_name} cnf is: {cnf_ef[a_name]}\n")
-                    print(f"{a_name} vars_to forget are: {vars_to_forget[a_name]}\n")
-                cnf_ef[a_name] = cnf_ef[a_name].forget(vars_to_forget[a_name])
+                    print(f"{action} cnf is: {cnf_effects[action]}\n")
+                    print(f"{action} vars_to forget are: {vars_to_forget[action]}\n")
+                cnf_effects[action] = cnf_effects[action].forget(vars_to_forget[action])
                 if debug:
-                    print(f"{a_name} cnf after forget is: {cnf_ef[a_name]}")
-                cnf_ef[a_name] = cnf_ef[a_name].implicates()
+                    print(f"{action} cnf after forget is: {cnf_effects[action]}")
+                cnf_effects[action] = cnf_effects[action].implicates()
                 if debug:
-                    print(f"{a_name} cnf after minimization is: {cnf_ef[a_name]}\n==================")
+                    print(f"{action} cnf after minimization is: {cnf_effects[action]}\n==================")
 
-            return con_pre, cnf_ef
+            return pre_conj, cnf_effects
 
         # start of algorithm
         # step 0- initiate all class data structures.
@@ -250,7 +268,7 @@ class ESAM:
             if debug:
                 print(f"creating proxy actions for action: {action_name}")
                 print(f"\ncnf-eff for act {action_name} = {cnf_eff[action_name]}")
-
+            cls.action_names_2_not_minimized_proxy[action_name] = list()
             surely_pre_a[action_name] = {literals[abs(ind) - 1] for ind in conj_pre[action_name]}
             # create proxy actions
             proxy_index = 0
@@ -259,9 +277,9 @@ class ESAM:
                 if debug:
                     print(f"model{proxy_index} is:  {model.__str__()}")
 
-                m: dict[PHashLearnedLiftedFluent, bool] = {literals[abs(ind) - 1]: model[ind] for ind
+                explicit_model: dict[PHashLearnedLiftedFluent, bool] = {literals[abs(ind) - 1]: model[ind] for ind
                                                            in model.keys() if isinstance(ind, int) and ind > 0}
-                m.update({literals[abs(ind) - 1]: not model[ind] for ind
+                explicit_model.update({literals[abs(ind) - 1]: not model[ind] for ind
                                                            in model.keys() if isinstance(ind, int) and ind < 0})
                 is_to_skip: bool = False  # skip the loop because no negative preconditions are allowed in strips?
                 for ind in model.keys():
@@ -279,8 +297,20 @@ class ESAM:
                 pre: set[PHashLearnedLiftedFluent] = surely_pre_a[action_name].union(
                     {literals[abs(ind) - 1] for ind in model.keys() if
                      isinstance(ind, int) and not model[ind] and ind > 0})
+                # neg_precond: set[PHashLearnedLiftedFluent] = surely_pre_a[action_name].union(
+                #     {literals[abs(ind) - 1] for ind in model.keys() if
+                #      isinstance(ind, int) and not model[ind] and ind < 0})
 
-                new_ind_dict = cls.minimize_parameters(model_dict=m,
+                # save proxy before minimization for testing and recording
+                cls.action_names_2_not_minimized_proxy[action_name].append(
+                    ParameterBoundLearnedLiftedAction(
+                        name=proxy_act_name,
+                        param_sorts= action_2_sort[action_name],
+                        precond=pre,
+                        add=add_eff,
+                        delete=del_eff))
+
+                new_ind_dict = cls.minimize_parameters(model_dict=explicit_model,
                                                        act_num_of_param=len(action_2_sort[action_name]))
                 reversed_dict: dict[int, int] = {v: k for k, v in new_ind_dict.items()}
                 param_sorts: list[str] = list()
@@ -289,6 +319,7 @@ class ESAM:
                 learned_actions.add(
                     ParameterBoundLearnedLiftedAction(proxy_act_name,
                                         param_sorts=param_sorts,
+                                        # negative_precond = cls.modify_fluent_params(neg_precond, new_ind_dict),
                                         precond=cls.modify_fluent_params(pre, new_ind_dict),
                                         add=cls.modify_fluent_params(add_eff, new_ind_dict),
                                         delete=cls.modify_fluent_params(del_eff, new_ind_dict)))
