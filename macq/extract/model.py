@@ -211,20 +211,30 @@ class Model:
                         sorts.add(sort)
 
                 lang.predicate(f.name, *f.param_sorts)
-
         if self.actions:
             for a in self.actions:
+
+
                 vars = [lang.variable(f"x{i}", s) for i, s in enumerate(a.param_sorts)]
 
-                if len(a.precond) == 1:
-                    precond = lang.get(list(a.precond)[0].name)(*[vars[i] for i in list(a.precond)[0].param_act_inds])  # type: ignore
+                positive_precond_list = [lang.get(f.name)(*[vars[i] for i in f.param_act_inds]) for f in a.precond]
+
+                neg_precond_list = []
+                if isinstance(a, ParameterBoundLearnedLiftedAction):
+                    for f in a.negative_precond:
+                        negated_predicate = CompoundFormula(
+                                Connective.Not,[lang.get(f.name)(*[vars[i] for i in f.param_act_inds])],)
+                        neg_precond_list.append(negated_predicate)
+
+                precond_list =  positive_precond_list + neg_precond_list
+                if len(precond_list) == 1:
+                    precond = precond_list[0]
+                elif len(precond_list) == 0:
+                    precond = top
+
                 else:
                     precond = CompoundFormula(
-                        Connective.And,
-                        [
-                            lang.get(f.name)(*[vars[i] for i in f.param_act_inds])  # type: ignore
-                            for f in a.precond
-                        ],
+                        Connective.And, precond_list ,
                     )
 
                 adds = [lang.get(f.name)(*[vars[i] for i in f.param_act_inds]) for f in a.add]  # type: ignore

@@ -1,3 +1,5 @@
+from typing import Tuple, Dict, Set
+
 from ..observation import ObservedTraceList
 from ..trace import Action, Fluent, State, PlanningObject
 from ..extract import Model
@@ -43,7 +45,7 @@ def make_param_bound_fluent_set(action: Action, flu: Fluent, action_2_sort: dict
 class ESAM:
 
     objects_names_2_types: [str, str] = dict()
-    action_names_2_not_minimized_proxy: dict[str, list[ParameterBoundLearnedLiftedAction]] = dict()
+    action_names_2_not_minimized_proxy: dict[str, list[ParameterBoundLearnedLiftedAction]]
     def __new__(cls,
                 obs_trace_list: ObservedTraceList = None,
                 debug=False,
@@ -51,6 +53,8 @@ class ESAM:
                 sorts: list[Sort] = None,
                 action_2_sort: dict[str, list[str]] = None,
                 fluent_types: [str, list]=None,
+                include_negative_preconds: bool = False,
+                include_proxy_negative_precond: bool = True,
                 untyped:bool=False,
                 **kwargs
                 ) -> Model:
@@ -62,6 +66,8 @@ class ESAM:
                 obj_to_sort(dict: str-> Sort): optional, a map that maps the sorts of each object parameters
                 sorts(list[Sort]): optional, sorts in the domain ordered s.t the parent is always before the child
                 for example- {"load-truck": ["obj", "obj", "loc"], "unload-truck": ["obj", "obj", "loc"],....}
+                include_negative_preconds(bool): specifies if negative preconditions will be collected from observation.
+                proxy_negative_proxy(bool): specifies whether a proxy action will contain negative preconditions for uncertain effects.
                 debug(bool): defaults to False. if True, prints debug.
                                 :return:
                                    a learned action model with using E-SAM
@@ -70,7 +76,7 @@ class ESAM:
             actions = obs_trace_list.get_actions()
             for a in actions:
                 print(a)
-        def extract_clauses() -> (tuple[dict[str, set[int]], dict[str, And[Or[Var]]]]):
+        def extract_clauses() -> tuple[dict[str, set[int]], dict[str, set[int]], dict[str, And[Or[Var]]]]:
             """
             Returns: conjunction of the number that represents fluents that must appear as preconditions (con_pre).
             conjunction of number(positive for add effect, negative for delete effect) that represents fluents that
@@ -83,34 +89,44 @@ class ESAM:
 
             if debug:
                 print("initializing conjunction of preconditions for each action")
-            pre_conj: dict[str, set[int]] = dict()  # represents parameter bound literals mapped by action, of pre-cond
+            positive_pre_conj: dict[str, set[int]] = dict()  # represents parameter bound literals mapped by action, of pre-cond
+            negative_pre_conj: dict[str, set[int]] = dict()
             cnf_effects: dict[str, And[Or[Var]]] = dict()  # represents parameter bound literals mapped by action, of eff
             cnf_eff_as_set: dict[str, set[Or[Var]]] = dict()
             vars_to_forget: dict[str, set[int]] = dict()  # will be used when minimizing effects cnf
-            for n in {action.name for action in actions_in_traces}:  # init set for each name
-                pre_conj[n] = {literals2index[lit] for lit in l_b_la[n]}
-                vars_to_forget[n] = set()
-                cnf_effects[n] = And()
-                cnf_eff_as_set[n] = set()
+            for name in {action.name for action in actions_in_traces}:  # init set for each name
+                positive_pre_conj[name] =  {literals2index[lit] for lit in l_b_la[name]}
+                negative_pre_conj[name] = {literals2index[lit] for lit in l_b_la[name]} if include_negative_preconds\
+                    else set()
+                vars_to_forget[name] = set()
+                cnf_effects[name] = And()
+                cnf_eff_as_set[name] = set()
 
             def remove_redundant_preconditions(pre_state: State):
                 """removes all parameter-bound literals that there groundings are not pre-state"""
                 nonlocal action
-                nonlocal pre_conj
+                nonlocal positive_pre_conj
+                nonlocal negative_pre_conj
                 nonlocal action_2_sort
                 nonlocal literals2index
                 nonlocal literals
-                to_remove: set[int] = set()
-                for precond in pre_conj[action.name]:
+                to_remove_from_positive_preconds: set[int] = set()
+                to_remove_from_negative_preconds: set[int] = set()
+                for precond in positive_pre_conj[action.name].union(negative_pre_conj[action.name]):
                     lifted_fluent = literals[precond - 1]
                     if all(ind < len(action.obj_params) for ind in lifted_fluent.param_act_inds):
                         fluent = Fluent(lifted_fluent.name,
                                         [action.obj_params[ob_index] for ob_index in lifted_fluent.param_act_inds])
                         if ((fluent not in pre_state.fluents.keys())
                                 or not pre_state.fluents[fluent]):
-                            # unbound or if not true, means, preA contains at the end only true value fluents
-                            to_remove.add(literals2index[lifted_fluent])
-                pre_conj[action.name].difference_update(to_remove)
+                            # unbound or if not true, means
+                            to_remove_from_positive_preconds.add(literals2index[lifted_fluent])
+                        elif include_negative_preconds:
+                            to_remove_from_negative_preconds.add(literals2index[lifted_fluent])
+
+                positive_pre_conj[action.name].difference_update(to_remove_from_positive_preconds)
+                negative_pre_conj[action.name].difference_update(to_remove_from_negative_preconds)
+
 
             def make_cnf_eff(pre_state: State, post_state: State):
                 """add all parameter-bound literals that may be an effect to cnf formula as is_eff(lit_num)"""
@@ -189,7 +205,7 @@ class ESAM:
                 if debug:
                     print(f"{action} cnf after minimization is: {cnf_effects[action]}\n==================")
 
-            return pre_conj, cnf_effects
+            return positive_pre_conj, negative_pre_conj, cnf_effects
 
         # start of algorithm
         # step 0- initiate all class data structures.
@@ -234,7 +250,7 @@ class ESAM:
         # the sets below are the arguments the model constructor requires and are the endpoint of this algorithm
         learned_actions: set[ParameterBoundLearnedLiftedAction] = set()
         learned_fluents: set[LearnedLiftedFluent] = set()
-
+        cls.action_names_2_not_minimized_proxy = dict()
         # step 1, collect all literals binding of each action
         l_b_la: dict[str, set[PHashLearnedLiftedFluent]] = {act.name: set() for act in actions_in_traces}
         if debug:
@@ -257,10 +273,11 @@ class ESAM:
         # step 3, extract cnf of effects and conjunction of preconditions using extract_clauses method
         if debug:
             print("starting 'extract clauses algorithm'")
-        conj_pre, cnf_eff = extract_clauses()
+        positive_conj_pre, negative_conj_pre, cnf_eff = extract_clauses()
 
         # step 4, make all lifted actions based on lifted pre\add\delete fluents of action
-        surely_pre_a: dict[str, set[PHashLearnedLiftedFluent]] = dict()  # all fluents who are surely preconds
+        possible_positive_pre_a: dict[str, set[PHashLearnedLiftedFluent]] = dict()  # all fluents who are surely preconds
+        possible_negative_pre_a: dict[str, set[PHashLearnedLiftedFluent]] = dict()
         if debug:
             print("starting creation of proxy actions")
 
@@ -269,7 +286,9 @@ class ESAM:
                 print(f"creating proxy actions for action: {action_name}")
                 print(f"\ncnf-eff for act {action_name} = {cnf_eff[action_name]}")
             cls.action_names_2_not_minimized_proxy[action_name] = list()
-            surely_pre_a[action_name] = {literals[abs(ind) - 1] for ind in conj_pre[action_name]}
+            possible_positive_pre_a[action_name] = {literals[abs(ind) - 1] for ind in positive_conj_pre[action_name]}
+            possible_negative_pre_a[action_name] = {literals[abs(ind) - 1] for ind in negative_conj_pre[action_name]}
+
             # create proxy actions
             proxy_index = 0
             for model in cnf_eff[action_name].models():
@@ -286,7 +305,7 @@ class ESAM:
                     if isinstance(ind, int) and not model[ind] and ind < 0:  # check if there are proxy's neg precond
                         is_to_skip = True
                         break
-                if is_to_skip:
+                if is_to_skip and not include_negative_preconds:
                     continue
 
                 proxy_act_name = str(f"{action_name}_{proxy_index}")
@@ -294,19 +313,33 @@ class ESAM:
                                                           isinstance(ind, int) and model[ind] and ind > 0}
                 del_eff: set[PHashLearnedLiftedFluent] = {literals[abs(ind) - 1] for ind in model.keys() if
                                                           isinstance(ind, int) and model[ind] and ind < 0}
-                pre: set[PHashLearnedLiftedFluent] = surely_pre_a[action_name].union(
+                positive_precond: set[PHashLearnedLiftedFluent] = possible_positive_pre_a[action_name].union(
                     {literals[abs(ind) - 1] for ind in model.keys() if
                      isinstance(ind, int) and not model[ind] and ind > 0})
-                # neg_precond: set[PHashLearnedLiftedFluent] = surely_pre_a[action_name].union(
-                #     {literals[abs(ind) - 1] for ind in model.keys() if
-                #      isinstance(ind, int) and not model[ind] and ind < 0})
+
+                # meaning negative preconds will only appear from proxy actions
+                # whose delete effect is uncertain due to injective binding.
+                neg_precond: set[PHashLearnedLiftedFluent] = set()
+                if include_negative_preconds:
+                    neg_precond = possible_negative_pre_a[action_name].union(
+                        {literals[abs(ind) - 1] for ind in model.keys() if
+                         isinstance(ind, int) and not model[ind] and ind < 0})
+                elif include_proxy_negative_precond:
+                    neg_precond.update({literals[abs(ind) - 1] for ind in model.keys() if
+                         isinstance(ind, int) and not model[ind] and ind < 0})
+
+                # contradiction, proxy action generation is skipped.
+                if len(positive_precond.intersection(neg_precond)) > 0:
+                    continue
+
 
                 # save proxy before minimization for testing and recording
                 cls.action_names_2_not_minimized_proxy[action_name].append(
                     ParameterBoundLearnedLiftedAction(
                         name=proxy_act_name,
                         param_sorts= action_2_sort[action_name],
-                        precond=pre,
+                        precond=positive_precond,
+                        negative_precond=neg_precond,
                         add=add_eff,
                         delete=del_eff))
 
@@ -320,7 +353,9 @@ class ESAM:
                     ParameterBoundLearnedLiftedAction(proxy_act_name,
                                         param_sorts=param_sorts,
                                         # negative_precond = cls.modify_fluent_params(neg_precond, new_ind_dict),
-                                        precond=cls.modify_fluent_params(pre, new_ind_dict),
+                                        precond=cls.modify_fluent_params(positive_precond, new_ind_dict),
+                                        negative_precond=cls.modify_fluent_params(
+                                            neg_precond, new_ind_dict),
                                         add=cls.modify_fluent_params(add_eff, new_ind_dict),
                                         delete=cls.modify_fluent_params(del_eff, new_ind_dict)))
 

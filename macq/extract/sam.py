@@ -1,6 +1,6 @@
 from .learned_sort import Sort, sort_inference_by_fluents
 from ..trace import Action, Fluent, State
-from ..extract import LearnedLiftedAction
+from ..extract.learned_action import ParameterBoundLearnedLiftedAction
 from ..extract.model import Model
 from ..extract.esam import make_param_bound_fluent_set
 from ..extract.learned_fluent import LearnedLiftedFluent, PHashLearnedLiftedFluent
@@ -20,7 +20,7 @@ class FluentInfo:
         return hash(f"{self.name} {self.param_sorts} {self.param_act_inds}")
 
 
-class SAMgenerator:
+class SAMLearner:
     """DESCRIPTION
     an object that handles all traces data and manipulates it in order to generate a model based on SAM algorithm
     """
@@ -31,10 +31,13 @@ class SAMgenerator:
     effA_delete: dict[str, set[PHashLearnedLiftedFluent]]  # dict like preA that holds delete and add biding for each action
     # name
     #  add is 0 index in tuple and delete is 1
-    preA: dict[str, set[PHashLearnedLiftedFluent]] # represents  parameter bound literals mapped by action, of pre-cond
+    positive_preA: dict[
+        str, set[PHashLearnedLiftedFluent]] # represents  parameter bound literals mapped by action, of pre-cond
+    negative_preA: dict[
+        str, set[PHashLearnedLiftedFluent]]  # represents  parameter bound literals mapped by action, of pre-cond
     # LiftedPreA, LiftedEFF both of them are stets of learned lifted fluents
     learned_lifted_fluents: set[LearnedLiftedFluent]
-    learned_lifted_action: set[LearnedLiftedAction]
+    learned_lifted_action: set[ParameterBoundLearnedLiftedAction]
     action_2_sort: dict[str, list[str]]
     sort_dict: dict[str, Sort]
     debug = False
@@ -45,6 +48,7 @@ class SAMgenerator:
                  action_2_sort: dict[str, list[str]] = None,
                  fluent_types: [str, list] = None,
                  sorts: list[Sort] = None,
+                 include_negative_preconds: bool = False,
                  debug=False,
                  untyped=False,
                  ):
@@ -55,11 +59,12 @@ class SAMgenerator:
                 """
         self.effA_add = dict()
         self.effA_delete = dict()
-        self.preA = dict()
+        self.positive_preA = dict()
         self.learned_lifted_fluents = set()
         self.learned_lifted_action = set()
 
         obj_name_2_type: dict[str, str] = dict()
+        self.include_negative_preconds = include_negative_preconds
         self.debug = debug
         self.obs_trace_list = obs_trace_list
         if any(diction is None for diction in [fluent_types, action_2_sort, sorts]):
@@ -122,7 +127,7 @@ class SAMgenerator:
                     self.L_bLA[act.name].add(PHashLearnedLiftedFluent(f.name,
                                                         sorts,
                                                         param_indexes_in_literal))
-        self.preA = self.L_bLA.copy()
+        self.positive_preA = self.L_bLA.copy()
     def update_l_b_la(self):
         actions_in_traces: set[Action] = self.obs_trace_list.get_actions()
         self.L_bLA: dict[str, set[PHashLearnedLiftedFluent]] = {act.name: set() for act in actions_in_traces}
@@ -133,7 +138,8 @@ class SAMgenerator:
                                                                                flu=f,
                                                                                action_2_sort=self.action_2_sort,
                                                                                fluent_types=self.fluent_types))
-        self.preA = self.L_bLA.copy()
+        self.positive_preA = self.L_bLA.copy()
+        self.negative_preA = self.L_bLA.copy()
 
     # =======================================ALGORITHM LOGIC========================================================
     def remove_redundant_preconditions(self, act: Action, transitions: list[list[Observation]]):
@@ -141,17 +147,22 @@ class SAMgenerator:
         """removes all parameter-bound literals that there groundings are not pre-state"""
         for trans in transitions:
             pre_state: State = trans[0].state
-            to_remove: set[PHashLearnedLiftedFluent] = set()
-            for lifted_fluent in self.preA[act.name]:
+            to_remove_from_positive_preconds: set[PHashLearnedLiftedFluent] = set()
+            to_remove_from_negative_preconds: set[PHashLearnedLiftedFluent] = set()
+            for lifted_fluent in self.positive_preA[act.name]:
                 if all(ind < len(act.obj_params) for ind in lifted_fluent.param_act_inds):
                     fluent = Fluent(lifted_fluent.name,
                                     [act.obj_params[ob_index] for ob_index in lifted_fluent.param_act_inds])
                     if ((fluent not in pre_state.fluents.keys())
                             or not pre_state.fluents[fluent]):
                         # unbound or if not true, means, preA contains at the end only true value fluents
-                        to_remove.add(lifted_fluent)
-            for lifted_fluent in to_remove:
-                self.preA[act.name].remove(lifted_fluent)
+                        to_remove_from_positive_preconds.add(lifted_fluent)
+                    else:
+                        if self.include_negative_preconds:
+                            to_remove_from_negative_preconds.add(lifted_fluent)
+            self.positive_preA[act.name].difference_update(to_remove_from_positive_preconds)
+            self.negative_preA[act.name].difference_update(to_remove_from_negative_preconds)
+
 
     # based on lines 9 to 11 in paper
     def add_surely_effects(self, act: Action, transitions: list[list[Observation]]):
@@ -165,49 +176,6 @@ class SAMgenerator:
             # # add all delete_effects of parameter bound literals
             # self.add_literal_binding_to_eff(pre_state, post_state, act, add_delete="delete")
 
-    # def add_literal_binding_to_eff2(self, s1: State, s2: State, act: Action,
-    #                                add_delete="add"):
-    #     """old function ,for documentation only. gets all fluents in the difference of s1-s2 and add all binding that
-    #        appears in difference to self.eff_'add_delete'[act.name]
-    #        Args:
-    #                 s1 (State):
-    #                     the state on the left side of the difference
-    #                 s2(State):
-    #                     the state on the right side of the difference.
-    #                 act(Action):
-    #                     the action of the effect
-    #                 add_delete(str):
-    #                     if ="add" it adds literal binding to add_effect
-    #                     if ="delete" it adds literal binding to the delete_effect
-    #        """
-    #     for k, v in s1.fluents.items():
-    #         if all(ob in act.obj_params for ob in k.objects):
-    #             if k not in s2.keys() or s2[k] != v:
-    #                 param_indexes_in_literal: list[int] = list()
-    #                 fluent_name = k.name
-    #                 sorts: list[str] = list()
-    #                 if fluent_name in self.fluent_types:
-    #                     sorts = self.fluent_types[fluent_name]
-    #                 i: int = 0
-    #                 for obj in k.objects:  # for every object in parameters, if object is in fluent, add its index
-    #                     if obj in act.obj_params:
-    #                         param_indexes_in_literal.append(act.obj_params.index(obj))
-    #                         if not self.fluent_types or fluent_name not in self.fluent_types:
-    #                             sorts.append(self.sort_dict[obj.name].sort_name)  # append obj sort
-    #                     i += 1
-    #                 bla: PHashLearnedLiftedFluent = PHashLearnedLiftedFluent(fluent_name, sorts, param_indexes_in_literal)
-    #                 if add_delete == "delete":
-    #                     if act.name in self.effA_delete.keys():  # if action name exists in dictionary
-    #                         # then add
-    #                         self.effA_delete[act.name].add(bla)  # add it to add effect
-    #                     else:
-    #                         self.effA_delete[act.name] = {bla}
-    #
-    #                 if add_delete == "add":
-    #                     if act.name in self.effA_add.keys():  # if action name exists in dictionary then add
-    #                         self.effA_add[act.name].add(bla)  # add it to add effect
-    #                     else:
-    #                         self.effA_add[act.name] = {bla}
     def add_literal_binding_to_eff(self, s1: State, s2: State, act: Action):
         for grounded_fluent, fluent_value in s1.fluents.items():
             if all(ob in act.obj_params for ob in grounded_fluent.objects):
@@ -274,17 +242,19 @@ class SAMgenerator:
         for action_name in self.L_bLA.keys():
             learned_act_fluents: dict[str, set[PHashLearnedLiftedFluent]] = dict()
             # make all action's pre-condition fluents and add to set
-            learned_act_fluents["precond"] = self.preA[action_name] if action_name in self.preA else {}
+            learned_act_fluents["precond"] = self.positive_preA[action_name] if action_name in self.positive_preA else {}
             # make all action's add_eff fluents and add to set
             learned_act_fluents["add"] = self.effA_add.get(action_name) if action_name in self.effA_add else {}
             # make all action's delete_eff fluents and add to set
             learned_act_fluents["delete"] = self.effA_delete[action_name] if action_name in self.effA_delete else {}
             # make learned lifted action instance
-            lifted_act = LearnedLiftedAction(name=action_name,
-                                             param_sorts=self.action_2_sort[action_name],
-                                             precond=learned_act_fluents["precond"],
-                                             add=learned_act_fluents["add"],
-                                             delete=learned_act_fluents["delete"])
+            lifted_act = ParameterBoundLearnedLiftedAction(name=action_name,
+                                                           param_sorts=self.action_2_sort[action_name],
+                                                           precond=learned_act_fluents["precond"],
+                                                           negative_precond=self.negative_preA[action_name]
+                                                                            if self.include_negative_preconds else set(),
+                                                           add=learned_act_fluents["add"],
+                                                           delete=learned_act_fluents["delete"])
             # add learned_lifted action to all learned actions set
             self.learned_lifted_action.add(lifted_act)
         # initiate a learned fluent set
@@ -305,16 +275,17 @@ class SAMgenerator:
 
 
 class SAM:
-    __sam_generator: SAMgenerator
+    __sam_generator: SAMLearner
     objects_names_2_types = dict()
     def __new__(cls,
                 obs_trace_list: ObservedTraceList = None,
                 debug=False,
-                sam_generator: SAMgenerator = None,
+                sam_generator: SAMLearner = None,
                 sorts: list[Sort] = None,
                 objects_names_2_types: dict[str, Sort] = None,
                 action_2_sort: dict[str, list[str]] = None,
                 fluent_types: [str, list] = None,
+                include_negative_preconds: bool = False,
                 untyped=False) -> Model:
         """Creates a new SAM instance. if input includes sam_generator object than it uses the object provided
         instead of creating a new one
@@ -327,12 +298,13 @@ class SAM:
                                    a model based on SAM learning
                                 """
         cls.__sam_generator = sam_generator if sam_generator is not None else\
-        SAMgenerator(
+        SAMLearner(
             obs_trace_list=obs_trace_list,
             sorts=sorts,
             fluent_types=fluent_types,
             action_2_sort=action_2_sort,
             sort_dict=objects_names_2_types,
+            include_negative_preconds=include_negative_preconds,
             untyped=untyped,
             debug=debug)
 

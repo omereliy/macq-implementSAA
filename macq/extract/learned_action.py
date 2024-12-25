@@ -168,8 +168,10 @@ class LearnedLiftedAction:
 
 
 class ParameterBoundLearnedLiftedAction(LearnedLiftedAction):  #TODO change class name to a more correct one
+    negative_precond: Union[PHashLearnedLiftedFluent, Set[PHashLearnedLiftedFluent]]
     def __init__(self, name: str, param_sorts: List[str], **kwargs):
         super().__init__(name, param_sorts, **kwargs)
+        self.negative_precond = set() if "negative_precond" not in kwargs else kwargs["negative_precond"]
 
     def __eq__(self, other):
         return (
@@ -182,6 +184,7 @@ class ParameterBoundLearnedLiftedAction(LearnedLiftedAction):  #TODO change clas
         return hash((
              tuple(self.param_sorts),
              frozenset(self.precond),
+             frozenset(self.negative_precond),
              frozenset(self.add),
              frozenset(self.delete)))
 
